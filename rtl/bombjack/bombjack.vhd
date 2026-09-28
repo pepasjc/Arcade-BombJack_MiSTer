@@ -101,7 +101,15 @@ entity BOMB_JACK is
 		hs_data_in			: in  std_logic_vector(7 downto 0);
 		hs_write				: in  std_logic
 ;
-		flip_screen			: in std_logic
+		flip_screen			: in std_logic;
+
+		-- RetroAchievements tap: CPU memory write cycles (levels, clk_12M domain)
+		O_RA_WE				: out std_logic;
+		O_RA_ADDR			: out std_logic_vector(15 downto 0);
+		O_RA_DO				: out std_logic_vector( 7 downto 0);
+		O_RA_SND_WE			: out std_logic;
+		O_RA_SND_ADDR		: out std_logic_vector(10 downto 0);
+		O_RA_SND_DO			: out std_logic_vector( 7 downto 0)
 	);
 end BOMB_JACK;
 
@@ -409,6 +417,11 @@ begin
 	-----------
 	-- our BRAM signals are opposite polarity from real SRAMs
 	s_wram0  <= not s_wram0_n;
+
+	-- RetroAchievements tap: the same qualifiers as the RAM/video chip selects
+	O_RA_WE   <= s_mewr and not s_csen_n and cpu_rfsh_n;
+	O_RA_ADDR <= cpu_addr;
+	O_RA_DO   <= cpu_data_out;
 	s_wram1  <= not s_wram1_n;
 	s_mewr <= not s_mewr_n;
 	
@@ -766,7 +779,11 @@ begin
 		O_PSG2_n				=> s_psg2_n,
 		O_PSG3_n				=> s_psg3_n,
 		O_SWR_n				=> s_swr_n,
-		O_SRD_n				=> s_srd_n
+		O_SRD_n				=> s_srd_n,
+
+		O_RA_WE				=> O_RA_SND_WE,
+		O_RA_ADDR			=> O_RA_SND_ADDR,
+		O_RA_DO				=> O_RA_SND_DO
 	);
 
 	----------------------------------------------------

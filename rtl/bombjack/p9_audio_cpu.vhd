@@ -42,7 +42,12 @@ entity audio is
 		O_PSG2_n		: out std_logic;
 		O_PSG3_n		: out std_logic;
 		O_SWR_n		: out std_logic;
-		O_SRD_n		: out std_logic
+		O_SRD_n		: out std_logic;
+
+		-- RetroAchievements tap: RAM write cycle (level, I_CLK_12M domain)
+		O_RA_WE		: out std_logic;
+		O_RA_ADDR	: out std_logic_vector(10 downto 0);
+		O_RA_DO		: out std_logic_vector( 7 downto 0)
 	);
 end audio;
 
@@ -93,6 +98,10 @@ begin
 	O_PSG1_n  <= not ( (not s_iorq_n) and (not cpu_addr(7)) and (not cpu_addr(4)) );
 
 	s_swr <= not s_swr_n;
+
+	O_RA_WE   <= s_sram and s_swr;
+	O_RA_ADDR <= cpu_addr(10 downto 0);
+	O_RA_DO   <= cpu_data_out;
 
 	-- chip 5D page 9
 	s_60H_n <= not ( (not s_mreq_n) and (    cpu_addr(14)) and (    cpu_addr(13)) );

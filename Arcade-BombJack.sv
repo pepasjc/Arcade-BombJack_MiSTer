@@ -212,7 +212,7 @@ assign VIDEO_ARY = (!ar) ? ((status[2])  ? 12'd2191 : 12'd2560) : 12'd0;
 
 `include "build_id.v" 
 localparam CONF_STR = {
-	"A.BMBJCK;;",
+	"RA_BMBJCK;;",
 	"H0OLM,Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
 	"H0O2,Orientation,Vert,Horz;",
 	"O35,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
@@ -409,7 +409,24 @@ wire rotate_ccw = 0;
 wire flip = 0;
 wire video_rotated;
 
-screen_rotate screen_rotate (.*);
+// The rotation framebuffer shares the DDR port with the RetroAchievements
+// mirror (see below), so its DDRAM outputs go through the RA mux.
+wire  [7:0] rot_burstcnt, rot_be;
+wire [28:0] rot_addr;
+wire [63:0] rot_din;
+wire        rot_we, rot_rd;
+
+screen_rotate screen_rotate
+(
+	.*,
+	.DDRAM_CLK(),
+	.DDRAM_BURSTCNT(rot_burstcnt),
+	.DDRAM_ADDR(rot_addr),
+	.DDRAM_DIN(rot_din),
+	.DDRAM_BE(rot_be),
+	.DDRAM_WE(rot_we),
+	.DDRAM_RD(rot_rd)
+);
 
 wire [3:0] hs_offset = status[31:28];
 wire [3:0] vs_offset = status[35:32];
@@ -452,6 +469,13 @@ assign reset = RESET | status[0] | ioctl_download | buttons[1];
 wire rom_download = ioctl_download && !ioctl_index;
 
 wire clk_6M;
+
+// RetroAchievements tap (see RETROACHIEVEMENTS below)
+wire        ra_cpu_we, ra_snd_we;
+wire [15:0] ra_cpu_addr;
+wire [10:0] ra_snd_addr;
+wire  [7:0] ra_cpu_do, ra_snd_do;
+
 bombjack_top bombjack_top
 (
 	.reset(reset),
@@ -502,7 +526,14 @@ bombjack_top bombjack_top
 	.hs_data_out(hs_data_out),
 	.hs_data_in(hs_data_in),
 	.hs_write(hs_write),
-	.flip_screen(status[23])
+	.flip_screen(status[23]),
+
+	.ra_we(ra_cpu_we),
+	.ra_addr(ra_cpu_addr),
+	.ra_do(ra_cpu_do),
+	.ra_snd_we(ra_snd_we),
+	.ra_snd_addr(ra_snd_addr),
+	.ra_snd_do(ra_snd_do)
 );
 
 // HISCORE SYSTEM
@@ -535,5 +566,118 @@ hiscore #(
 	.pause_cpu(hs_pause),
 	.configured(hs_configured)
 );
+
+///////////////////   RETROACHIEVEMENTS   //////////////////
+//
+// RAM mirror for the RetroAchievements fork of Main_MiSTer (bombjack_ra_mirror.v,
+// from jotego's jtframe via the RA jtcores fork). RA arcade sets are written
+// against FinalBurn Neo, whose Bomb Jack driver (d_bombjack.cpp) exposes the
+// MemIndex concatenation as "All Ram":
+//     0x0000 DrvZ80RAM0 0x1000  main Z80 8000-8FFF
+//     0x1000 DrvZ80RAM1 0x0400  sound Z80 4000-43FF
+//     0x1400 DrvVidRAM  0x0400  main Z80 9000-93FF
+//     0x1800 DrvColRAM  0x0400  main Z80 9400-97FF
+//     0x1C00 DrvPalRAM  0x0100  main Z80 9C00-9CFF
+//     0x1D00 DrvSprRAM  0x0100  main Z80 9800-98FF
+// The Z80s are 8-bit: shadow byte k is RA address k; the ARM region table is
+// the identity {0, 0x1E00, 0}.
+//
+// The CPUs run on clk_12M, a ripple clock divided from clk_sys, and the
+// hiscore port writes on clk_sys in pulses too short for clk_12M. So the tap
+// works on clk_sys: a CPU write cycle (MREQ+WR held for ~18 clk_sys clocks) is
+// only taken once two consecutive samples agree on strobe, address and data,
+// and the older sample is written, so a sample caught while the bus changes
+// is never used. The hiscore writes are taken directly.
+//
+// The only other DDR client is the screen rotation framebuffer, which runs on
+// CLK_VIDEO (= clk_sys), ignores DDRAM_BUSY and writes one pixel per CE_PIXEL
+// while VGA_DE is high. The mirror only starts a copy once VGA_DE has been low
+// for 4096 clocks (85 us, longer than any HBlank): the copy (1k qwords, ~25 us)
+// then runs in VBlank and the framebuffer never loses a write. Held off during
+// ROM download.
+
+function automatic [16:0] ra_map_main(input [15:0] a);  // {valid, offset}
+	casez (a)
+		16'b1000_????_????_????: ra_map_main = { 1'b1, 4'h0, a[11:0] };          // 8000-8FFF
+		16'b1001_00??_????_????: ra_map_main = { 1'b1, 6'b000101, a[9:0] };      // 9000 -> 0x1400
+		16'b1001_01??_????_????: ra_map_main = { 1'b1, 6'b000110, a[9:0] };      // 9400 -> 0x1800
+		16'b1001_1000_????_????: ra_map_main = { 1'b1, 8'h1D, a[7:0] };          // 9800 -> 0x1D00
+		16'b1001_1100_????_????: ra_map_main = { 1'b1, 8'h1C, a[7:0] };          // 9C00 -> 0x1C00
+		default:                 ra_map_main = 17'd0;
+	endcase
+endfunction
+
+reg        rm_we1, rm_we2, rs_we1, rs_we2;
+reg [15:0] rm_a1, rm_a2;
+reg [10:0] rs_a1, rs_a2;
+reg  [7:0] rm_d1, rm_d2, rs_d1, rs_d2;
+always @(posedge clk_sys) begin
+	{ rm_we1, rm_a1, rm_d1 } <= { ra_cpu_we, ra_cpu_addr, ra_cpu_do };
+	{ rm_we2, rm_a2, rm_d2 } <= { rm_we1, rm_a1, rm_d1 };
+	{ rs_we1, rs_a1, rs_d1 } <= { ra_snd_we, ra_snd_addr, ra_snd_do };
+	{ rs_we2, rs_a2, rs_d2 } <= { rs_we1, rs_a1, rs_d1 };
+end
+
+wire [16:0] rm_map = ra_map_main(rm_a2);
+wire [16:0] hs_map = ra_map_main(hs_address);
+wire        rm_ok  = rm_we1 & rm_we2 & rm_a1 == rm_a2 & rm_d1 == rm_d2 & rm_map[16];
+wire        rs_ok  = rs_we1 & rs_we2 & rs_a1 == rs_a2 & rs_d1 == rs_d2 & rs_a2[10] == 1'b0;
+
+wire [14:0] ra_wr_word;
+wire [15:0] ra_wr_din;
+wire  [1:0] ra_wr_be;
+
+bombjack_ra_tap_merge #(.N(3)) ra_tap
+(
+	.clk(clk_sys),
+	.we({ rs_ok, rm_ok, hs_write & hs_map[16] }),
+	.off({ 16'h1000 + { 6'd0, rs_a2[9:0] }, rm_map[15:0], hs_map[15:0] }),
+	.din({ rs_d2, rm_d2, hs_data_in }),
+	.ra_wr_word(ra_wr_word),
+	.ra_wr_din(ra_wr_din),
+	.ra_wr_be(ra_wr_be)
+);
+
+reg [1:0] ra_vbl_s;
+always @(posedge clk_sys) ra_vbl_s <= { ra_vbl_s[0], vblank };
+
+reg [11:0] ra_de_idle;
+always @(posedge clk_sys) begin
+	if (VGA_DE) ra_de_idle <= 0;
+	else if (~&ra_de_idle) ra_de_idle <= ra_de_idle + 1'd1;
+end
+
+wire  [7:0] ra_burstcnt, ra_be;
+wire [28:0] ra_addr;
+wire [63:0] ra_din;
+wire        ra_we, ra_active;
+
+bombjack_ra_mirror #(.AW(13)) ra_mirror
+(
+	.rst(reset),
+	.clk(clk_sys),
+	.lvbl(~ra_vbl_s[1]),
+	.hold(ioctl_download),
+	.start_ok(&ra_de_idle),
+	.wr_clk(clk_sys),
+	.wr_word(ra_wr_word),
+	.wr_din(ra_wr_din),
+	.wr_be(ra_wr_be),
+	.active(ra_active),
+	.ddr_busy(DDRAM_BUSY),
+	.ddr_burstcnt(ra_burstcnt),
+	.ddr_addr(ra_addr),
+	.ddr_we(ra_we),
+	.ddr_be(ra_be),
+	.ddr_din(ra_din)
+);
+
+assign DDRAM_CLK      = clk_sys;
+assign DDRAM_BURSTCNT = ra_active ? ra_burstcnt : rot_burstcnt;
+assign DDRAM_ADDR     = ra_active ? ra_addr     : rot_addr;
+assign DDRAM_DIN      = ra_active ? ra_din      : rot_din;
+assign DDRAM_BE       = ra_active ? ra_be       : rot_be;
+assign DDRAM_WE       = ra_active ? ra_we       : rot_we;
+assign DDRAM_RD       = ra_active ? 1'b0        : rot_rd;
 
 endmodule

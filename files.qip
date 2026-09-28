@@ -32,3 +32,5 @@ set_global_assignment -name SYSTEMVERILOG_FILE "rtl/hiscore.v"
 set_global_assignment -name SYSTEMVERILOG_FILE "rtl/pause.v"
 set_global_assignment -name SYSTEMVERILOG_FILE "Arcade-BombJack.sv"
 
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/bombjack_ra_tap_merge.sv
+set_global_assignment -name VERILOG_FILE rtl/bombjack_ra_mirror.v

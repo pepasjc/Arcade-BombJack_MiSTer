@@ -67,7 +67,16 @@ port 	(
 		hs_data_out		: out std_logic_vector(7 downto 0);
 		hs_data_in		: in  std_logic_vector(7 downto 0);
 		hs_write			: in  std_logic;
-		flip_screen			: in  std_logic
+		flip_screen			: in  std_logic;
+
+		-- RetroAchievements tap (bombjack.vhd): main and sound CPU memory write
+		-- cycles, levels in the clk_12M domain (stable for many clk_48M clocks)
+		ra_we				: out std_logic;
+		ra_addr			: out std_logic_vector(15 downto 0);
+		ra_do				: out std_logic_vector( 7 downto 0);
+		ra_snd_we		: out std_logic;
+		ra_snd_addr		: out std_logic_vector(10 downto 0);
+		ra_snd_do		: out std_logic_vector( 7 downto 0)
 	);
 end bombjack_top;
 
@@ -235,7 +244,14 @@ begin
 		hs_data_in			=> hs_data_in,
 		hs_write				=> hs_write,
 
-		flip_screen			=> flip_screen
+		flip_screen			=> flip_screen,
+
+		O_RA_WE				=> ra_we,
+		O_RA_ADDR			=> ra_addr,
+		O_RA_DO				=> ra_do,
+		O_RA_SND_WE			=> ra_snd_we,
+		O_RA_SND_ADDR		=> ra_snd_addr,
+		O_RA_SND_DO			=> ra_snd_do
 	);
 
 	ROM_4P_cs <= '1' when dn_addr(16 downto 13) = X"1" else '0';
